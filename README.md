@@ -1,6 +1,7 @@
 > **Unofficial fork:** This repository carries a Windows-validated Pi terminal-tab title patch for Wu. See [PI_TITLE_PATCH.md](./PI_TITLE_PATCH.md). It is not affiliated with the Wu upstream project.
 
 <p align="center">English | <a href="README.zh-CN.md">中文</a></p>
+<p align="center"><a href="https://github.com/852079633/wu-pi-title-patch/actions/workflows/pi-title-patch.yml"><img alt="Windows x64 focused tests" src="https://github.com/852079633/wu-pi-title-patch/actions/workflows/pi-title-patch.yml/badge.svg?branch=pi-title-1.3.0"></a></p>
 
 <div align="center">
   <img src="crates/wu/resources/app-icon.png" alt="Wu" width="128">

@@ -60,7 +60,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
           fetch-depth: 1
@@ -109,7 +109,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       WU_RUNNER_IMAGE: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.focused-tests.outputs.source_sha }}
           fetch-depth: 1
@@ -128,7 +128,7 @@ jobs:
         run: ./script/package-portable-windows.ps1 -Architecture x86_64 -ExpectedCommit "${{ needs.focused-tests.outputs.source_sha }}"
 
       - name: Upload portable runtime (not an installer or release)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: wu-pi-title-${{ github.run_number }}-${{ needs.focused-tests.outputs.source_sha }}-windows-x64
           path: |

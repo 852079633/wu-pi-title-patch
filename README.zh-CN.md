@@ -1,6 +1,7 @@
 > **非官方 fork：** 本仓库维护经过 Windows 验证的 Pi 会话标题同步到 Wu 终端标签的补丁。流程见 [PI_TITLE_PATCH.md](./PI_TITLE_PATCH.md)。本项目与 Wu 上游无隶属关系。
 
 <p align="center"><a href="README.md">English</a> | 中文</p>
+<p align="center"><a href="https://github.com/852079633/wu-pi-title-patch/actions/workflows/pi-title-patch.yml"><img alt="Windows x64 定向测试" src="https://github.com/852079633/wu-pi-title-patch/actions/workflows/pi-title-patch.yml/badge.svg?branch=pi-title-1.3.0"></a></p>
 
 <div align="center">
   <img src="crates/wu/resources/app-icon.png" alt="Wu" width="128">
