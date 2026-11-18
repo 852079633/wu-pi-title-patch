@@ -154,6 +154,7 @@ pub struct TerminalView {
     ime_state: Option<ImeState>,
     self_handle: WeakEntity<Self>,
     rename_editor: Option<Entity<Editor>>,
+    rename_editor_was_edited: bool,
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
@@ -301,6 +302,7 @@ impl TerminalView {
             ime_state: None,
             self_handle: cx.entity().downgrade(),
             rename_editor: None,
+            rename_editor_was_edited: false,
             rename_editor_subscription: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
@@ -447,20 +449,19 @@ impl TerminalView {
         let Some(editor) = self.rename_editor.take() else {
             return;
         };
+        let rename_editor_was_edited = self.rename_editor_was_edited;
+        self.rename_editor_was_edited = false;
         self.rename_editor_subscription = None;
         if save {
             let new_label = editor.read(cx).text(cx).trim().to_string();
             let label = if new_label.is_empty() {
                 None
+            } else if self.custom_title.is_none() && !rename_editor_was_edited {
+                // Confirming an untouched automatic title must not freeze it as a manual title.
+                None
             } else {
-                // Only set custom_title if the text differs from the terminal's dynamic title.
-                // This prevents subtle layout changes when clicking away without making changes.
-                let terminal_title = self.terminal.read(cx).title(true);
-                if new_label == terminal_title {
-                    None
-                } else {
-                    Some(new_label)
-                }
+                // An edited label is manual even when it equals the current automatic title.
+                Some(new_label)
             };
             self.set_custom_title(label, cx);
         }
@@ -484,10 +485,18 @@ impl TerminalView {
             .unwrap_or_else(|| self.terminal.read(cx).title(true));
 
         let rename_editor = cx.new(|cx| Editor::single_line(window, cx));
+        rename_editor.update(cx, |editor, cx| {
+            editor.set_text(current_label, window, cx);
+            editor.select_all(&SelectAll, window, cx);
+        });
+
+        self.rename_editor_was_edited = false;
+        self.rename_editor = Some(rename_editor.clone());
         let rename_editor_subscription = cx.subscribe_in(&rename_editor, window, {
             let rename_editor = rename_editor.clone();
-            move |_this, _, event, window, cx| {
-                if let editor::EditorEvent::Blurred = event {
+            move |this, _, event, window, cx| match event {
+                editor::EditorEvent::Edited { .. } => this.rename_editor_was_edited = true,
+                editor::EditorEvent::Blurred => {
                     // Defer to let focus settle (avoids canceling during double-click).
                     let rename_editor = rename_editor.clone();
                     cx.defer_in(window, move |this, window, cx| {
@@ -500,15 +509,12 @@ impl TerminalView {
                         }
                     });
                 }
+                _ => {}
             }
         });
-
-        self.rename_editor = Some(rename_editor.clone());
         self.rename_editor_subscription = Some(rename_editor_subscription);
 
         rename_editor.update(cx, |editor, cx| {
-            editor.set_text(current_label, window, cx);
-            editor.select_all(&SelectAll, window, cx);
             editor.focus_handle(cx).focus(window, cx);
         });
         cx.notify();
@@ -3106,6 +3112,247 @@ mod tests {
             view.set_custom_title(None, cx);
             let text = view.tab_content_text(0, cx);
             assert_ne!(text.as_ref(), "my-server");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_updates_tab_and_respects_manual_titles(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+        let terminal = cx.new(|cx| {
+            terminal::TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                terminal::terminal_settings::AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        });
+        let terminal_for_osc = terminal.clone();
+        let (terminal_view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal,
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+
+        let tab_update_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tab_update_counter = tab_update_count.clone();
+        let _tab_subscription = cx.update(|_, app| {
+            app.subscribe(
+                &terminal_view,
+                move |_, event: &workspace::item::ItemEvent, _cx| {
+                    if matches!(event, workspace::item::ItemEvent::UpdateTab) {
+                        tab_update_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                },
+            )
+        });
+
+        let tab_updates_before_osc = tab_update_count.load(std::sync::atomic::Ordering::SeqCst);
+        terminal_for_osc.update(cx, |terminal, cx| {
+            terminal.write_output("\x1b]2;Pi session A\x07".as_bytes(), cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            tab_update_count.load(std::sync::atomic::Ordering::SeqCst) > tab_updates_before_osc
+        );
+        terminal_view.update(cx, |view, app| {
+            assert_eq!(view.tab_content_text(0, app).as_ref(), "Pi session A");
+        });
+
+        // Confirming an untouched automatic title must not freeze the value while renaming.
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.rename_terminal(&RenameTerminal, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        terminal_for_osc.update(cx, |terminal, cx| {
+            terminal.write_output("\x1b]2;Pi session B\x07".as_bytes(), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.finish_renaming(true, window, cx);
+                assert!(view.custom_title().is_none());
+                assert_eq!(view.tab_content_text(0, cx).as_ref(), "Pi session B");
+            });
+        });
+
+        // An explicit edit is manual even when the final text matches the current OSC title.
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.rename_terminal(&RenameTerminal, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        let rename_editor = terminal_view.update(cx, |view, _cx| {
+            view.rename_editor
+                .as_ref()
+                .expect("rename editor was created")
+                .clone()
+        });
+        cx.update(|window, app| {
+            rename_editor.update(app, |editor, cx| {
+                editor.set_text("temporary", window, cx);
+                editor.set_text("Pi session B", window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.finish_renaming(true, window, cx);
+                assert_eq!(view.custom_title(), Some("Pi session B"));
+            });
+        });
+
+        terminal_for_osc.update(cx, |terminal, cx| {
+            terminal.write_output("\x1b]2;Pi session C\x07".as_bytes(), cx);
+        });
+        cx.run_until_parked();
+        terminal_view.update(cx, |view, app| {
+            assert_eq!(view.tab_content_text(0, app).as_ref(), "Pi session B");
+        });
+
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.rename_terminal(&RenameTerminal, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.finish_renaming(true, window, cx);
+                assert_eq!(view.custom_title(), Some("Pi session B"));
+            });
+        });
+
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.rename_terminal(&RenameTerminal, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        let rename_editor = terminal_view.update(cx, |view, _cx| {
+            view.rename_editor
+                .as_ref()
+                .expect("rename editor was created")
+                .clone()
+        });
+        cx.update(|window, app| {
+            rename_editor.update(app, |editor, cx| {
+                editor.set_text("", window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, app| {
+            terminal_view.update(app, |view, cx| {
+                view.finish_renaming(true, window, cx);
+                assert!(view.custom_title().is_none());
+                assert_eq!(view.tab_content_text(0, cx).as_ref(), "Pi session C");
+            });
+        });
+
+        terminal_for_osc.update(cx, |terminal, cx| {
+            terminal.write_output("\x1b]2;Pi session D\x07".as_bytes(), cx);
+        });
+        cx.run_until_parked();
+        terminal_view.update(cx, |view, app| {
+            assert_eq!(view.tab_content_text(0, app).as_ref(), "Pi session D");
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    async fn test_real_powershell_pty_title_reaches_terminal_tab(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+        let powershell = std::path::PathBuf::from(
+            std::env::var_os("SystemRoot").expect("SystemRoot must be set on Windows"),
+        )
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        assert!(powershell.is_file(), "Windows PowerShell must be installed");
+
+        let builder_task = cx.update(|app| {
+            terminal::TerminalBuilder::new(
+                Some(std::env::temp_dir()),
+                terminal::TerminalMode::interactive(),
+                task::Shell::WithArguments {
+                    program: powershell.to_string_lossy().into_owned(),
+                    args: vec!["-NoProfile".into(), "-NoLogo".into()],
+                    title_override: None,
+                },
+                Default::default(),
+                terminal::terminal_settings::CursorShape::default(),
+                terminal::terminal_settings::AlternateScroll::On,
+                None,
+                Vec::new(),
+                std::time::Duration::from_millis(500),
+                false,
+                0,
+                app,
+                Vec::new(),
+                PathStyle::local(),
+            )
+        });
+        let builder = builder_task
+            .await
+            .expect("failed to start explicit PowerShell PTY");
+        let terminal = cx.new(|cx| builder.subscribe(cx));
+        terminal.update(cx, |terminal, _cx| assert!(terminal.is_pty()));
+        let (terminal_view, cx) = cx.add_window_view(|window, cx| {
+            TerminalView::new(
+                terminal.clone(),
+                workspace.downgrade(),
+                None,
+                project.downgrade(),
+                window,
+                cx,
+            )
+        });
+
+        let startup_task = terminal.update(cx, |terminal, _cx| {
+            terminal.start_init_command_startup_handshake()
+        });
+        let startup_timeout = cx.cx.executor().timer(std::time::Duration::from_secs(15));
+        let startup_result =
+            futures::future::select(Box::pin(startup_task), Box::pin(startup_timeout)).await;
+        assert!(
+            matches!(startup_result, futures::future::Either::Left(((), _))),
+            "PowerShell startup handshake timed out",
+        );
+
+        let command = "[Console]::Write(([char]27)+']2;PI_WU_REAL_PTY_TITLE'+[char]7); Write-Output 'PI_WU_COMMAND_DONE'\r";
+        terminal.update(cx, |terminal, _cx| {
+            terminal.input(command.as_bytes().to_vec());
+        });
+        cx.cx
+            .condition(&terminal_view, |view, app| {
+                view.tab_content_text(0, app).as_ref() == "PI_WU_REAL_PTY_TITLE"
+            })
+            .await;
+        cx.cx
+            .executor()
+            .timer(std::time::Duration::from_millis(500))
+            .await;
+        cx.run_until_parked();
+        terminal.update(cx, |terminal, _cx| {
+            assert_eq!(terminal.title(true), "PI_WU_REAL_PTY_TITLE");
+        });
+        terminal_view.update(cx, |view, app| {
+            assert_eq!(
+                view.tab_content_text(0, app).as_ref(),
+                "PI_WU_REAL_PTY_TITLE"
+            );
         });
     }
 

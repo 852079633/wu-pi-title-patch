@@ -1,3 +1,5 @@
+> **非官方 fork：** 本仓库维护经过 Windows 验证的 Pi 会话标题同步到 Wu 终端标签的补丁。流程见 [PI_TITLE_PATCH.md](./PI_TITLE_PATCH.md)。本项目与 Wu 上游无隶属关系。
+
 <p align="center"><a href="README.md">English</a> | 中文</p>
 
 <div align="center">
@@ -5,7 +7,7 @@
   <h1>Wu</h1>
   <p>快速的原生代码编辑器和智能体工作区。</p>
   <p>用 Rust 编写，开箱即用。</p>
-  <p><a href="#下载"><strong>下载</strong></a></p>
+  <p><a href="#pi-title-patch-builds"><strong>生成 Pi 标题补丁包</strong></a></p>
 </div>
 
 ---
@@ -19,6 +21,12 @@ Wu 是一款用 Rust 编写的快速原生代码编辑器，界面简洁现代�
 - 👾 **内置编程智能体。** 直接支持 Claude Code、Codex 和 OpenCode。
 - ✨ **默认就好看。** 外观简洁现代，用起来也顺手。
 - 🤫 **完全私密。** 无需账号，没有遥测。Wu 从不把你的使用数据发送到任何地方。
+
+## Pi Title Patch Builds
+
+本 fork 不发布永久 Release。要生成 Windows x64 便携包，打开 **Actions → Pi terminal-tab title patch → Run workflow**，在 `source_ref` 选择已验收的分支、标签或提交，并将 `build_runtime` 设为 `true`。工作流会先运行定向测试，再从同一个源码提交构建；ZIP 与来源/哈希 JSON 作为 Actions 临时产物保留 7 天。它是完整便携运行目录，不是安装程序、GitHub Release，也不会自动安装。隔离 GUI 验收和按版本部署注意事项见 [PI_TITLE_PATCH.md](./PI_TITLE_PATCH.md)。
+
+下面“下载”中的链接是 Wu 上游官方版本，**不包含本 fork 的 Pi 标题补丁**。
 
 ## 下载
 

@@ -1,3 +1,5 @@
+> **Unofficial fork:** This repository carries a Windows-validated Pi terminal-tab title patch for Wu. See [PI_TITLE_PATCH.md](./PI_TITLE_PATCH.md). It is not affiliated with the Wu upstream project.
+
 <p align="center">English | <a href="README.zh-CN.md">中文</a></p>
 
 <div align="center">
@@ -5,7 +7,7 @@
   <h1>Wu</h1>
   <p>The fast, native code editor and agent workspace.</p>
   <p>Written in Rust. Batteries included.</p>
-  <p><a href="#download"><strong>Download</strong></a></p>
+  <p><a href="#pi-title-patch-builds"><strong>Build Pi title patch</strong></a></p>
 </div>
 
 ---
@@ -19,6 +21,12 @@ Wu is a fast, native code editor written in Rust, with a clean, modern design an
 - 👾 **Coding agents included.** Built-in support for Claude Code, Codex, and OpenCode.
 - ✨ **Beautiful by default.** Clean, modern look with a delightful UX.
 - 🤫 **Completely private.** No account or telemetry. Wu never sends your usage data anywhere.
+
+## Pi Title Patch Builds
+
+This fork does not publish permanent releases. To create a Windows x64 portable artifact, open **Actions → Pi terminal-tab title patch → Run workflow**, choose the tested branch/tag/commit in `source_ref`, and set `build_runtime` to `true`. The workflow runs the focused tests first and builds the exact same source commit; the ZIP and provenance/SHA-256 JSON are kept as a seven-day Actions artifact. It is a complete portable runtime, not an installer, GitHub Release, or automatic installation. Follow [PI_TITLE_PATCH.md](./PI_TITLE_PATCH.md) for isolated GUI smoke testing and version-specific deployment precautions.
+
+The upstream Download links below are official Wu builds and **do not contain this fork's Pi title patch**.
 
 ## Download
 

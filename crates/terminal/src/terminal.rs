@@ -1032,6 +1032,7 @@ impl TerminalBuilder {
 
             selection_head: None,
             breadcrumb_text: String::new(),
+            osc_title: None,
             scroll_px: px(0.),
             next_link_id: 0,
             selection_phase: SelectionPhase::Ended,
@@ -1316,6 +1317,7 @@ impl TerminalBuilder {
 
                 selection_head: None,
                 breadcrumb_text: String::new(),
+                osc_title: None,
                 scroll_px: px(0.),
                 next_link_id: 0,
                 selection_phase: SelectionPhase::Ended,
@@ -1519,6 +1521,7 @@ pub struct Terminal {
 
     pub breadcrumb_text: String,
     title_override: Option<String>,
+    osc_title: Option<String>,
     scroll_px: Pixels,
     next_link_id: usize,
     selection_phase: SelectionPhase,
@@ -1633,6 +1636,17 @@ impl Terminal {
                     .unwrap_or(false)
                 {
                     return;
+                }
+
+                let sanitized_title = title
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .collect::<String>();
+                let sanitized_title = sanitized_title.trim();
+                if !sanitized_title.is_empty() && self.osc_title.as_deref() != Some(sanitized_title)
+                {
+                    self.osc_title = Some(sanitized_title.to_owned());
+                    cx.emit(Event::TitleChanged);
                 }
 
                 self.breadcrumb_text = title;
@@ -2984,7 +2998,8 @@ impl Terminal {
             None => self
                 .title_override
                 .as_ref()
-                .map(|title_override| title_override.to_string())
+                .or(self.osc_title.as_ref())
+                .map(|title| title.to_string())
                 .unwrap_or_else(|| match &self.terminal_type {
                     TerminalType::Pty { info, .. } => info
                         .current
@@ -3148,8 +3163,21 @@ impl Terminal {
             return None;
         }
         const SHELLS: &[&str] = &[
-            "sh", "bash", "zsh", "fish", "nu", "csh", "tcsh", "ksh", "dash", "rc", "xonsh",
-            "elvish", "pwsh", "powershell", "cmd",
+            "sh",
+            "bash",
+            "zsh",
+            "fish",
+            "nu",
+            "csh",
+            "tcsh",
+            "ksh",
+            "dash",
+            "rc",
+            "xonsh",
+            "elvish",
+            "pwsh",
+            "powershell",
+            "cmd",
         ];
         // A nested interactive shell is idle; a shell given a script or command is a job.
         let runs_script = process
@@ -3651,6 +3679,20 @@ mod tests {
     use rand::{Rng, distr, rngs::StdRng};
     use task::{Shell, ShellBuilder};
 
+    fn build_display_only_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
+        cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                SettingsCursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .subscribe(cx)
+        })
+    }
+
     #[test]
     fn test_init_command_startup_marker_commands_do_not_contain_marker() {
         let marker_id = 42;
@@ -3709,6 +3751,95 @@ mod tests {
             terminal.write_output(marker.as_bytes(), cx);
         });
         assert!(startup_rx.try_recv().is_ok());
+    }
+
+    #[gpui::test]
+    async fn test_osc_title_updates_per_terminal_and_survives_reset(cx: &mut TestAppContext) {
+        let first = build_display_only_terminal(cx);
+        let second = build_display_only_terminal(cx);
+        let title_change_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let title_change_counter = title_change_count.clone();
+        let _title_subscription = cx.update(|cx| {
+            cx.subscribe(&first, move |_, event: &Event, _cx| {
+                if matches!(event, Event::TitleChanged) {
+                    title_change_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            })
+        });
+
+        first.update(cx, |terminal, cx| {
+            terminal.write_output("\x1b]2;Pi session A\x07".as_bytes(), cx);
+        });
+        second.update(cx, |terminal, cx| {
+            terminal.write_output("\x1b]2;Pi session B\x07".as_bytes(), cx);
+        });
+        cx.run_until_parked();
+        first.update(cx, |terminal, _cx| {
+            assert_eq!(terminal.title(true), "Pi session A");
+        });
+        second.update(cx, |terminal, _cx| {
+            assert_eq!(terminal.title(true), "Pi session B");
+        });
+        assert_eq!(
+            title_change_count.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        first.update(cx, |terminal, cx| {
+            terminal.write_output(b"\x1b]2;\x07", cx);
+        });
+        cx.run_until_parked();
+        first.update(cx, |terminal, cx| {
+            assert_eq!(terminal.title(true), "Pi session A");
+            assert!(terminal.breadcrumb_text.is_empty());
+            terminal.process_event(TerminalBackendEvent::Title("Next\x07Name".to_string()), cx);
+            assert_eq!(terminal.title(true), "NextName");
+            terminal.process_event(TerminalBackendEvent::ResetTitle, cx);
+            assert_eq!(terminal.title(true), "NextName");
+            assert!(terminal.breadcrumb_text.is_empty());
+        });
+        assert_eq!(
+            title_change_count.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        second.update(cx, |terminal, _cx| {
+            assert_eq!(terminal.title(true), "Pi session B");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_task_and_static_titles_take_priority_over_osc(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let terminal = build_display_only_terminal(cx);
+
+        terminal.update(cx, |terminal, cx| {
+            terminal.title_override = Some("Static title".to_string());
+            terminal.write_output("\x1b]2;Pi session\x07".as_bytes(), cx);
+        });
+        cx.run_until_parked();
+
+        terminal.update(cx, |terminal, _cx| {
+            assert_eq!(terminal.osc_title.as_deref(), Some("Pi session"));
+            assert_eq!(terminal.title(true), "Static title");
+
+            let (_completion_tx, completion_rx) = async_channel::bounded(1);
+            terminal.task = Some(TaskState {
+                status: TaskStatus::Running,
+                completion_rx,
+                spawned_task: task::SpawnInTerminal {
+                    label: "Task title".to_string(),
+                    full_label: "Full task title".to_string(),
+                    ..Default::default()
+                },
+            });
+            assert_eq!(terminal.title(true), "Task title");
+            assert_eq!(terminal.title(false), "Full task title");
+
+            terminal.task = None;
+            assert_eq!(terminal.title(true), "Static title");
+            terminal.title_override = None;
+            assert_eq!(terminal.title(true), "Pi session");
+        });
     }
 
     #[test]

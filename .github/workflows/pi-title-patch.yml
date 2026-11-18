@@ -1,0 +1,138 @@
+name: Pi terminal-tab title patch
+
+on:
+  push:
+    branches:
+      - "pi-title-*"
+    paths:
+      - ".github/workflows/pi-title-patch.yml"
+      - "PI_TITLE_PATCH.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "crates/terminal/src/terminal.rs"
+      - "crates/terminal_view/src/terminal_view.rs"
+      - "script/bundle-windows.ps1"
+      - "script/build-stable-runtime-ci.ps1"
+      - "script/package-portable-windows.ps1"
+      - "script/test-pi-title-patch.ps1"
+  pull_request:
+    branches:
+      - pi-title-1.3.0
+    paths:
+      - ".github/workflows/pi-title-patch.yml"
+      - "PI_TITLE_PATCH.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "crates/terminal/src/terminal.rs"
+      - "crates/terminal_view/src/terminal_view.rs"
+      - "script/bundle-windows.ps1"
+      - "script/build-stable-runtime-ci.ps1"
+      - "script/package-portable-windows.ps1"
+      - "script/test-pi-title-patch.ps1"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to test and optionally package
+        required: true
+        default: pi-title-1.3.0
+        type: string
+      build_runtime:
+        description: Build and upload a complete Windows x64 runtime ZIP
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-title-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-tests:
+    name: Windows x64 focused tests
+    runs-on: windows-2022
+    timeout-minutes: 300
+    outputs:
+      source_sha: ${{ steps.resolve-source.outputs.sha }}
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: rustup show
+
+      - name: Resolve immutable source commit
+        id: resolve-source
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $sha -notmatch '^[0-9a-f]{40}$') { throw 'Could not resolve a full source commit SHA.' }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha=$sha"
+
+      - name: Initialize MSVC and run focused tests
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+          if not defined VS_PATH exit /b 1
+          call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          where cmake
+          if errorlevel 1 exit /b 1
+          cmake --version
+          if errorlevel 1 exit /b 1
+          rustup show
+          if errorlevel 1 exit /b 1
+          cargo fmt --manifest-path Cargo.toml --package terminal --package terminal_view --check
+          if errorlevel 1 exit /b 1
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File script\test-pi-title-patch.ps1
+          if errorlevel 1 exit /b 1
+
+  portable-runtime:
+    name: Manual stable Windows x64 runtime
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_runtime }}
+    needs: focused-tests
+    runs-on: windows-2022
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: "0"
+      WU_RUNNER_IMAGE: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.focused-tests.outputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: rustup show
+
+      - name: Build using Wu's official Windows bundler
+        shell: pwsh
+        run: ./script/build-stable-runtime-ci.ps1
+
+      - name: Assemble and verify complete portable runtime
+        shell: pwsh
+        run: ./script/package-portable-windows.ps1 -Architecture x86_64 -ExpectedCommit "${{ needs.focused-tests.outputs.source_sha }}"
+
+      - name: Upload portable runtime (not an installer or release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wu-pi-title-${{ github.run_number }}-${{ needs.focused-tests.outputs.source_sha }}-windows-x64
+          path: |
+            target/Wu-*-x86_64-portable.zip
+            target/Wu-*-x86_64-portable.json
+          if-no-files-found: error
+          retention-days: 7
